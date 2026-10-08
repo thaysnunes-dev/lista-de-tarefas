@@ -1,0 +1,540 @@
+
+"use strict";
+
+(() => {
+  const STORAGE_KEY = "taskflow_tasks_v1";
+  const THEME_KEY = "taskflow_theme_v1";
+
+  const $ = (selector) => document.querySelector(selector);
+
+  const elements = {
+    form: $("#taskForm"),
+    input: $("#taskInput"),
+    date: $("#taskDate"),
+    priority: $("#taskPriority"),
+    list: $("#taskList"),
+    empty: $("#emptyState"),
+    emptyTitle: $("#emptyTitle"),
+    emptyDescription: $("#emptyDescription"),
+    total: $("#totalCount"),
+    done: $("#doneCount"),
+    pending: $("#pendingCount"),
+    progress: $("#progressCount"),
+    progressText: $("#progressText"),
+    progressBar: $("#progressBar"),
+    progressTrack: $("#progressTrack"),
+    allBadge: $("#allBadge"),
+    pendingBadge: $("#pendingBadge"),
+    doneBadge: $("#doneBadge"),
+    clear: $("#clearCompleted"),
+    sort: $("#sortSelect"),
+    theme: $("#themeToggle"),
+    today: $("#todayLabel"),
+    status: $("#statusMessage"),
+    dialog: $("#editDialog"),
+    editForm: $("#editForm"),
+    editInput: $("#editInput"),
+    editDate: $("#editDate"),
+    editPriority: $("#editPriority"),
+    closeDialog: $("#closeDialog"),
+    cancelEdit: $("#cancelEdit")
+  };
+
+  const priorities = {
+    alta: { label: "Alta", order: 3 },
+    media: { label: "Média", order: 2 },
+    baixa: { label: "Baixa", order: 1 }
+  };
+
+  let tasks = loadTasks();
+  let activeFilter = "all";
+  let editingId = null;
+
+  function generateId() {
+    if (globalThis.crypto?.randomUUID) {
+      return crypto.randomUUID();
+    }
+
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function isValidDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+
+    return date.getFullYear() === year &&
+      date.getMonth() === month - 1 &&
+      date.getDate() === day;
+  }
+
+  function normalizeTask(task) {
+    if (!task || typeof task !== "object") return null;
+
+    if (typeof task.id !== "string" ||
+        typeof task.title !== "string" ||
+        typeof task.completed !== "boolean" ||
+        typeof task.createdAt !== "number" ||
+        !Number.isFinite(task.createdAt)) {
+      return null;
+    }
+
+    const title = task.title.trim().slice(0, 120);
+    if (!title) return null;
+
+    return {
+      id: task.id,
+      title,
+      completed: task.completed,
+      date: isValidDate(task.date) ? task.date : "",
+      priority: priorities[task.priority] ? task.priority : "media",
+      createdAt: task.createdAt
+    };
+  }
+
+  function loadTasks() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) return [];
+
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+
+      const ids = new Set();
+
+      return parsed
+        .map(normalizeTask)
+        .filter((task) => {
+          if (!task || ids.has(task.id)) return false;
+          ids.add(task.id);
+          return true;
+        });
+    } catch (error) {
+      console.error("Erro ao carregar tarefas:", error);
+      return [];
+    }
+  }
+
+  function announce(message) {
+    elements.status.textContent = "";
+    requestAnimationFrame(() => {
+      elements.status.textContent = message;
+    });
+  }
+
+  function saveTasks() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+      return true;
+    } catch (error) {
+      console.error("Erro ao salvar tarefas:", error);
+      announce("Não foi possível salvar no navegador.");
+      alert("Não foi possível salvar suas tarefas. Verifique o armazenamento do navegador.");
+      return false;
+    }
+  }
+
+  function commitTasks(nextTasks, successMessage) {
+    const previous = tasks;
+    tasks = nextTasks;
+
+    if (!saveTasks()) {
+      tasks = previous;
+      render();
+      return false;
+    }
+
+    render();
+
+    if (successMessage) announce(successMessage);
+    return true;
+  }
+
+  function formatDate(value) {
+    if (!isValidDate(value)) return "";
+
+    const [year, month, day] = value.split("-").map(Number);
+
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    }).format(new Date(year, month - 1, day));
+  }
+
+  function todayISO() {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  }
+
+  function getVisibleTasks() {
+    let result = tasks.filter((task) => {
+      if (activeFilter === "pending") return !task.completed;
+      if (activeFilter === "done") return task.completed;
+      return true;
+    });
+
+    result = [...result];
+
+    switch (elements.sort.value) {
+      case "oldest":
+        result.sort((a, b) => a.createdAt - b.createdAt);
+        break;
+
+      case "priority":
+        result.sort((a, b) =>
+          priorities[b.priority].order - priorities[a.priority].order ||
+          b.createdAt - a.createdAt
+        );
+        break;
+
+      case "date":
+        result.sort((a, b) =>
+          (a.date || "9999-12-31").localeCompare(b.date || "9999-12-31") ||
+          b.createdAt - a.createdAt
+        );
+        break;
+
+      case "alphabetical":
+        result.sort((a, b) =>
+          a.title.localeCompare(b.title, "pt-BR")
+        );
+        break;
+
+      default:
+        result.sort((a, b) => b.createdAt - a.createdAt);
+    }
+
+    return result;
+  }
+
+  function createElement(tag, className, text) {
+    const element = document.createElement(tag);
+
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+
+    return element;
+  }
+
+  function createActionButton(symbol, label, action, id, extraClass = "") {
+    const button = createElement(
+      "button",
+      `action-button ${extraClass}`,
+      symbol
+    );
+
+    button.type = "button";
+    button.dataset.action = action;
+    button.dataset.id = id;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+
+    return button;
+  }
+
+  function createTaskElement(task) {
+    const item = createElement(
+      "article",
+      `task-item${task.completed ? " completed" : ""}`
+    );
+
+    const main = createElement("div", "task-main");
+    const checkbox = createElement("input", "task-checkbox");
+
+    checkbox.type = "checkbox";
+    checkbox.checked = task.completed;
+    checkbox.dataset.action = "toggle";
+    checkbox.dataset.id = task.id;
+    checkbox.setAttribute(
+      "aria-label",
+      `Marcar ${task.title} como ${task.completed ? "pendente" : "concluída"}`
+    );
+
+    const details = createElement("div", "task-details");
+    const title = createElement("span", "task-title", task.title);
+    const meta = createElement("div", "task-meta");
+
+    if (task.date) {
+      const dateText = createElement(
+        "span",
+        "task-date",
+        `📅 ${formatDate(task.date)}`
+      );
+
+      if (!task.completed && task.date < todayISO()) {
+        dateText.textContent += " · Atrasada";
+      }
+
+      meta.append(dateText);
+    }
+
+    const priority = createElement(
+      "span",
+      `priority ${task.priority}`,
+      priorities[task.priority].label
+    );
+
+    meta.append(priority);
+    details.append(title, meta);
+    main.append(checkbox, details);
+
+    const actions = createElement("div", "task-actions");
+
+    actions.append(
+      createActionButton("✎", `Editar ${task.title}`, "edit", task.id),
+      createActionButton("✕", `Excluir ${task.title}`, "delete", task.id, "delete")
+    );
+
+    item.append(main, actions);
+    return item;
+  }
+
+  function updateStats() {
+    const total = tasks.length;
+    const done = tasks.filter((task) => task.completed).length;
+    const pending = total - done;
+    const percent = total ? Math.round((done / total) * 100) : 0;
+
+    elements.total.textContent = total;
+    elements.done.textContent = done;
+    elements.pending.textContent = pending;
+    elements.progress.textContent = `${percent}%`;
+
+    elements.allBadge.textContent = total;
+    elements.pendingBadge.textContent = pending;
+    elements.doneBadge.textContent = done;
+
+    elements.progressText.textContent = `${done} de ${total} concluídas`;
+    elements.progressBar.style.width = `${percent}%`;
+    elements.progressTrack.setAttribute("aria-valuenow", String(percent));
+
+    elements.clear.disabled = done === 0;
+  }
+
+  function updateEmptyState() {
+    const total = tasks.length;
+
+    if (total === 0) {
+      elements.emptyTitle.textContent = "Tudo começa com uma tarefa!";
+      elements.emptyDescription.textContent =
+        "Adicione sua primeira atividade para começar a organizar seu dia.";
+    } else if (activeFilter === "done") {
+      elements.emptyTitle.textContent = "Nenhuma tarefa concluída";
+      elements.emptyDescription.textContent =
+        "As atividades finalizadas aparecerão aqui.";
+    } else if (activeFilter === "pending") {
+      elements.emptyTitle.textContent = "Tudo em dia!";
+      elements.emptyDescription.textContent =
+        "Você não tem tarefas pendentes neste momento.";
+    } else {
+      elements.emptyTitle.textContent = "Nenhuma tarefa encontrada";
+      elements.emptyDescription.textContent =
+        "Experimente outro filtro.";
+    }
+  }
+
+  function render() {
+    updateStats();
+
+    const visibleTasks = getVisibleTasks();
+    const fragment = document.createDocumentFragment();
+
+    visibleTasks.forEach((task) => {
+      fragment.append(createTaskElement(task));
+    });
+
+    elements.list.replaceChildren(fragment);
+    elements.empty.hidden = visibleTasks.length > 0;
+
+    if (!visibleTasks.length) updateEmptyState();
+
+    document.querySelectorAll("[data-filter]").forEach((button) => {
+      const active = button.dataset.filter === activeFilter;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  elements.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    const title = elements.input.value.trim();
+
+    if (!title) {
+      elements.input.focus();
+      return;
+    }
+
+    const newTask = {
+      id: generateId(),
+      title: title.slice(0, 120),
+      completed: false,
+      date: elements.date.value,
+      priority: elements.priority.value,
+      createdAt: Date.now()
+    };
+
+    if (commitTasks([...tasks, newTask], "Tarefa adicionada com sucesso.")) {
+      elements.form.reset();
+      activeFilter = "all";
+      render();
+      elements.input.focus();
+    }
+  });
+
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeFilter = button.dataset.filter;
+      render();
+    });
+  });
+
+  elements.sort.addEventListener("change", render);
+
+  elements.list.addEventListener("change", (event) => {
+    const checkbox = event.target.closest('[data-action="toggle"]');
+    if (!checkbox) return;
+
+    const task = tasks.find((item) => item.id === checkbox.dataset.id);
+    if (!task) return;
+
+    const updated = tasks.map((item) =>
+      item.id === task.id
+        ? { ...item, completed: checkbox.checked }
+        : item
+    );
+
+    commitTasks(
+      updated,
+      checkbox.checked ? "Tarefa concluída." : "Tarefa reaberta."
+    );
+  });
+
+  elements.list.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+
+    const task = tasks.find((item) => item.id === button.dataset.id);
+    if (!task) return;
+
+    if (button.dataset.action === "edit") {
+      editingId = task.id;
+      elements.editInput.value = task.title;
+      elements.editDate.value = task.date;
+      elements.editPriority.value = task.priority;
+      elements.dialog.showModal();
+      elements.editInput.focus();
+    }
+
+    if (button.dataset.action === "delete") {
+      if (!confirm(`Excluir a tarefa "${task.title}"?`)) return;
+
+      commitTasks(
+        tasks.filter((item) => item.id !== task.id),
+        "Tarefa excluída."
+      );
+    }
+  });
+
+  elements.editForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    const title = elements.editInput.value.trim();
+    if (!title || !editingId) return;
+
+    const updated = tasks.map((task) =>
+      task.id === editingId
+        ? {
+            ...task,
+            title: title.slice(0, 120),
+            date: elements.editDate.value,
+            priority: elements.editPriority.value
+          }
+        : task
+    );
+
+    if (commitTasks(updated, "Tarefa atualizada.")) {
+      elements.dialog.close();
+    }
+  });
+
+  elements.dialog.addEventListener("close", () => {
+    editingId = null;
+  });
+
+  elements.closeDialog.addEventListener("click", () => {
+    elements.dialog.close();
+  });
+
+  elements.cancelEdit.addEventListener("click", () => {
+    elements.dialog.close();
+  });
+
+  elements.dialog.addEventListener("click", (event) => {
+    if (event.target === elements.dialog) {
+      elements.dialog.close();
+    }
+  });
+
+  elements.clear.addEventListener("click", () => {
+    const completed = tasks.filter((task) => task.completed).length;
+
+    if (!completed) return;
+
+    if (!confirm(`Excluir ${completed} tarefa(s) concluída(s)?`)) return;
+
+    commitTasks(
+      tasks.filter((task) => !task.completed),
+      "Tarefas concluídas removidas."
+    );
+  });
+
+  function applyTheme(theme) {
+    const dark = theme === "dark";
+
+    document.body.classList.toggle("dark", dark);
+    elements.theme.textContent = dark ? "☀" : "☾";
+    elements.theme.setAttribute(
+      "aria-label",
+      dark ? "Ativar tema claro" : "Ativar tema escuro"
+    );
+  }
+
+  function loadTheme() {
+    try {
+      return localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  }
+
+  elements.theme.addEventListener("click", () => {
+    const nextTheme = document.body.classList.contains("dark")
+      ? "light"
+      : "dark";
+
+    applyTheme(nextTheme);
+
+    try {
+      localStorage.setItem(THEME_KEY, nextTheme);
+    } catch (error) {
+      console.warn("Não foi possível salvar o tema:", error);
+    }
+  });
+
+  elements.today.textContent = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  }).format(new Date());
+
+  applyTheme(loadTheme());
+  render();
+})();
